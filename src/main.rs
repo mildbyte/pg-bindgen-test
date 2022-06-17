@@ -5,7 +5,7 @@ use std::ffi::CString;
 use cstore_bindings::{CStoreBeginRead, CStoreEndRead, CStoreReadNextRow};
 use pgx::{
     pg_sys::{self, CreateTupleDesc, FormData_pg_attribute, NameData},
-    PgList,
+    FromDatum, PgList,
 };
 
 mod cstore_bindings;
@@ -74,6 +74,7 @@ pub struct TransactionStateData {
 
 extern "C" {
     pub static mut CurrentTransactionState: *mut TransactionStateData;
+    fn InitializeTimeouts();
 }
 
 fn do_something() -> () {
@@ -91,10 +92,8 @@ fn do_something() -> () {
         pg_sys::InitStandaloneProcess(exec_path.as_ptr());
         pg_sys::Mode = 1; // InitProcessing;
         pg_sys::InitializeGUCOptions();
-        // TODO get this one to stop complaining
-        pg_sys::InitializeTimeouts();
+        InitializeTimeouts();
 
-        // pg_sys::find_my_exec(exec_path.as_ptr(), pg_sys::my_exec_path.as_mut_ptr());
         pg_sys::SelectConfigFiles(user_d_option.as_ptr(), progname.as_ptr());
         pg_sys::ChangeToDataDir();
         pg_sys::CreateDataDirLockFile(false);
@@ -112,19 +111,11 @@ fn do_something() -> () {
             false,
         );
 
-        // // Catalog cache (cstore calls GetDefaultOpClass)
-        // pg_sys::InitCatalogCache();
-
         // // Fake us being in a transaction
         // (*CurrentTransactionState).state = 2; // TRANS_INPROGRESS
+        // Not needed woohoo
 
-        // // AAAAA
-
-        // pg_sys::CreateAuxProcessResourceOwner();
-        // pg_sys::StartupXLOG();
-        // pg_sys::ReleaseAuxProcessResources(true);
-        // pg_sys::CurrentResourceOwner = std::ptr::null_mut();
-        // pg_sys::StartTransactionCommand();
+        pg_sys::StartTransactionCommand();
         // TODO: actually load ./src/backend/catalog/postgres.bki here?
         let mut attrs = [
             &mut FormData_pg_attribute {
@@ -173,7 +164,8 @@ fn do_something() -> () {
 
         let mut column_list = PgList::<pg_sys::Var>::new();
         column_list.push(&mut pg_sys::Var {
-            varattno: 1,
+            varattno: 3,
+            vartype: 3802,
             ..Default::default()
         });
 
@@ -189,11 +181,14 @@ fn do_something() -> () {
         let mut column_values = vec![0; 4];
         let mut column_nulls = vec![false; 4];
 
-        let more = CStoreReadNextRow(
+        while CStoreReadNextRow(
             read_state,
             column_values.as_mut_ptr(),
             column_nulls.as_mut_ptr(),
-        );
+        ) {
+            let date = pgx::JsonB::from_datum(column_values[2], column_nulls[2], 3802);
+            println!("{:?}", date);
+        }
 
         CStoreEndRead(read_state);
     }
