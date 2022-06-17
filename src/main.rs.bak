@@ -1,0 +1,160 @@
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+
+
+use lazy_static::lazy_static;
+use std::sync::{LockResult, Mutex, MutexGuard};
+
+lazy_static! {
+    static ref PARSER_LOCK: Mutex<()> = Mutex::new(());
+    static ref ONETIME_SETUP: () = {
+        unsafe {
+            pg_sys::MemoryContextInit();
+        }
+    };
+}
+
+/// If you intend to use any functions from the unsafe `` module, they
+/// must be used while the returned `LockResult` is held.  Failure to do so will
+/// lead to undefined behavior with those functions.
+pub fn access_lock() -> LockResult<MutexGuard<'static, ()>> {
+    let result = PARSER_LOCK.lock();
+    *ONETIME_SETUP;
+    result
+}
+
+pub fn parse_query(statements: &str) -> std::result::Result<Vec<()>, ()> {
+    #[cfg(target_os = "linux")]
+    extern "C" {
+        #[link_name = "__sigsetjmp"]
+        pub fn sigsetjmp(
+            env: *mut pg_sys::sigjmp_buf,
+            savemask: std::os::raw::c_int,
+        ) -> std::os::raw::c_int;
+    }
+
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        pub fn sigsetjmp(
+            env: *mut sigjmp_buf,
+            savemask: std::os::raw::c_int,
+        ) -> std::os::raw::c_int;
+    }
+
+    //
+    // a wrapper around Postgres' "raw_parser()" function that sets up a jump point
+    // so we can translate possible Postgres elog(ERROR)s during parsing into proper
+    // Rust Result:Err
+    //
+    unsafe fn raw_parser_wrapper(
+        str: *const std::os::raw::c_char,
+    ) -> std::result::Result<*mut pg_sys::List, ()> {
+        // remember Postgres' error stack
+        let prev_exception_stack = pg_sys::PG_exception_stack;
+        let prev_error_context_stack = pg_sys::error_context_stack;
+
+        // because we're going to set a jump point here that'll override where
+        // Postgres thinks it should jump in the event of an ERROR
+        let mut jmp_buff = std::mem::MaybeUninit::uninit();
+        let jump_value = sigsetjmp(jmp_buff.as_mut_ptr(), 0);
+
+        if jump_value == 0 {
+            // tell Postgres that it should jump back to us if it has an error
+            pg_sys::PG_exception_stack = jmp_buff.as_mut_ptr();
+
+            // parse the query and return a successful response if it doesn't raise an ERROR
+            Err(())
+        } else {
+            // Postgres raised an ERROR and we handle it here
+
+            // first off, restore Postgres' understanding of where it really wanted to jump to
+            pg_sys::PG_exception_stack = prev_exception_stack;
+            pg_sys::error_context_stack = prev_error_context_stack;
+
+            // and now we'll make a copy of the current "ErrorData"
+            let error_data_ptr = pg_sys::CopyErrorData();
+            let error_data = error_data_ptr
+                .as_ref()
+                .expect("CopyErrorData returned null"); // error_data_ptr should never be null
+
+            let result = if error_data.message.is_null() {
+                // we have no error message
+                ()
+            } else {
+                // pull out the details of the error
+                let message = std::ffi::CStr::from_ptr(error_data.message);
+                ()
+            };
+
+            // make sure to cleanup after ourselves
+            pg_sys::FreeErrorData(error_data_ptr);
+            pg_sys::FlushErrorState();
+
+            // and return the error
+            Err(result)
+        }
+    }
+
+    // all access to the parser must be synchronized
+    let _mutex = access_lock();
+
+    // create and switch to a new memory context so that we can free it without
+    // damaging anything that might be allocated by Postgres in Postgres' TopMemoryContext,
+    // which is what CurrentMemoryContext should be pointing to
+    let (memory_context, old_context) = unsafe {
+        assert_eq!(pg_sys::CurrentMemoryContext, pg_sys::TopMemoryContext);
+
+        let our_context = pg_sys::AllocSetContextCreateInternal(
+            pg_sys::TopMemoryContext,
+            std::ffi::CStr::from_bytes_with_nul(b"parser context\0")
+                .unwrap()
+                .as_ptr(),
+                pg_sys::ALLOCSET_DEFAULT_MINSIZE as pg_sys::Size,
+                pg_sys::ALLOCSET_DEFAULT_INITSIZE as pg_sys::Size,
+                pg_sys::ALLOCSET_DEFAULT_MAXSIZE as pg_sys::Size,
+        );
+
+        let old_context = pg_sys::CurrentMemoryContext;
+        pg_sys::CurrentMemoryContext = our_context;
+
+        (our_context, old_context)
+    };
+
+    // we've copied the result of the parser into owned Rust memory, so
+    // free up whatever Postgres (the parser) might have allocated in our
+    // MemoryContext and switch back to the previous one
+    unsafe {
+        pg_sys::MemoryContextReset(memory_context);
+        pg_sys::CurrentMemoryContext = old_context;
+    }
+
+    Err(())
+}
+
+// fn do_something() {
+//     let attrs = Form_pg_attribute { attname = "attr"};
+//     let tupdesc = CreateTupleDesc(5, attrs);
+//     let state = CStoreBeginRead(std::ffi::CStr::from_bytes_with_nul(b"parser context\0"), tupdesc);
+
+//     let columnValues = 1;
+//     let columnNulls = 1;
+//     CStoreReadNextRow(state, columnValues, columnNulls);
+
+//     // decode columnValues lol
+//     // decode columnNulls lol
+// }
+
+fn main() {
+    println!("Hello, world!");
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parse_query;
+
+    #[test]
+    fn parse_query_smoke() {
+        assert_eq!(parse_query("SELECT 1;"), Err(()))
+    }
+}
