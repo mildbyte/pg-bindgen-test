@@ -1,9 +1,11 @@
+use std::ffi::CString;
 use std::fs;
+use std::iter::zip;
 use std::{any::Any, sync::Arc};
 
 use super::postgres::init_pg;
 use async_trait::async_trait;
-use datafusion::arrow::array::{UInt64Builder, UInt8Builder};
+use datafusion::arrow::array::{ArrayBuilder, BooleanBuilder, UInt64Builder, UInt8Builder};
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::error::Result;
 use datafusion::{
@@ -20,10 +22,15 @@ use datafusion::{
         memory::MemoryStream, project_schema, ExecutionPlan, SendableRecordBatchStream, Statistics,
     },
 };
-use pgx::name_data_to_str;
-use pgx::pg_sys::{AbortCurrentTransaction, FormData_pg_attribute, StartTransactionCommand};
+use pgx::pg_sys::{
+    self, AbortCurrentTransaction, Datum, FormData_pg_attribute, InvalidOid,
+    StartTransactionCommand,
+};
+use pgx::{name_data_to_str, FromDatum, PgList};
 
 use crate::cstore::cstore_schema_to_attributes;
+use crate::cstore::cstore_sys::{CStoreBeginRead, CStoreEndRead, CStoreReadNextRow};
+use crate::postgres;
 
 #[derive(Debug, Clone)]
 pub struct CStoreDataSource {
@@ -109,6 +116,29 @@ impl CStoreExec {
     }
 }
 
+macro_rules! append_datum {
+    ($name:tt, $datum_type:ident, $builder_type:ident) => {
+        fn $name(datum: Datum, is_null: bool, builder: &mut Box<dyn ArrayBuilder>) {
+            builder
+                .as_any_mut()
+                .downcast_mut::<$builder_type>()
+                .unwrap()
+                .append_option(unsafe { $datum_type::from_datum(datum, is_null, InvalidOid) })
+                .unwrap();
+        }
+    };
+}
+
+append_datum!(append_bool, bool, BooleanBuilder);
+
+type DatumAppender = fn(Datum, bool, &mut Box<dyn ArrayBuilder>) -> ();
+
+fn prepare_conversions(
+    pg_schema: &Vec<FormData_pg_attribute>,
+) -> (Vec<DatumAppender>, Vec<Box<dyn ArrayBuilder>>) {
+    (vec![append_bool], vec![Box::new(BooleanBuilder::new(1024))])
+}
+
 impl ExecutionPlan for CStoreExec {
     fn as_any(&self) -> &dyn Any {
         self
@@ -145,17 +175,66 @@ impl ExecutionPlan for CStoreExec {
         // Here:
         //   -> CStoreBeginScan?
         //   -> need to return a vec of array refs
+        //   -> so we need to have an array of PrimitiveBuilder arrays (vec of dyn PrimitiveBuilders?)
+        //   -> also a map of OIDs to output functions and types (so DataType and a Fn of Datum, &mut ArrayBuilder -> ())
 
-        let mut id_array = UInt8Builder::new(0);
-        let mut account_array = UInt64Builder::new(0);
+        let (appenders, mut data_builders) = prepare_conversions(&self.db.pg_schema);
+
+        // Let's roll
+
+        // Prepare a list of columns that CStore uses to select just the required parts
+        // TODO: we actually don't know this, we need to run that projection operation on our vector of
+        // pg attributes
+        // right now we pretend to select all columns
+        let mut column_list = PgList::<pg_sys::Var>::new();
+
+        for attr in &self.db.pg_schema {
+            column_list.push(&mut pg_sys::Var {
+                varattno: attr.num(),
+                vartype: attr.type_oid().value(),
+                ..Default::default()
+            })
+        }
+
+        let read_state = unsafe {
+            let c_path = CString::new(self.db.object_path.as_str()).unwrap();
+            CStoreBeginRead(
+                c_path.as_ptr(),
+                postgres::create_tuple_desc(&self.db.pg_schema).as_ptr(),
+                column_list.into_pg(),
+                std::ptr::null_mut(),
+            )
+        };
+
+        let mut column_values: Vec<pg_sys::Datum> = vec![0; self.db.pg_schema.len()];
+        let mut column_nulls: Vec<bool> = vec![false; self.db.pg_schema.len()];
+
+        unsafe {
+            while CStoreReadNextRow(
+                read_state,
+                column_values.as_mut_ptr(),
+                column_nulls.as_mut_ptr(),
+            ) {
+                // NB: we have as many vals/nulls as the original schema, but we'll have
+                // fewer appenders so we won't be able to just zip like this
+
+                for i in 0..self.db.pg_schema.len() {
+                    appenders[i](
+                        column_values[i],
+                        column_nulls[i],
+                        data_builders.get_mut(i).unwrap(),
+                    );
+                }
+            }
+
+            CStoreEndRead(read_state);
+            pg_sys::AbortCurrentTransaction();
+        }
 
         Ok(Box::pin(MemoryStream::try_new(
             vec![RecordBatch::try_new(
                 self.projected_schema.clone(),
-                vec![
-                    Arc::new(id_array.finish()),
-                    Arc::new(account_array.finish()),
-                ],
+                data_builders.iter_mut().map(|b| b.finish()).collect(),
             )?],
             self.schema(),
             None,

@@ -1,4 +1,4 @@
-mod cstore_sys;
+pub mod cstore_sys;
 
 use std::{any::Any, ffi::CString};
 
