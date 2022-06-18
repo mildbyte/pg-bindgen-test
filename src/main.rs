@@ -1,11 +1,14 @@
 #![feature(extern_types)]
 
-use std::{ffi::CString, borrow::BorrowMut};
+use std::{any::Any, ffi::CString};
 
 use cstore_bindings::{CStoreBeginRead, CStoreEndRead, CStoreReadNextRow};
 use pgx::{
-    pg_sys::{self, CreateTupleDesc, FormData_pg_attribute, FormData_pg_type, NameData, Form_pg_attribute},
-    FromDatum, PgList,
+    pg_sys::{
+        self, CreateTupleDesc, FormData_pg_attribute, FormData_pg_type, Form_pg_attribute,
+        NameData, TupleDescData,
+    },
+    AllocatedByPostgres, FromDatum, PgBox, PgList,
 };
 
 mod cstore_bindings;
@@ -61,19 +64,7 @@ fn make_name_data(name: &str) -> NameData {
     NameData { data: inner }
 }
 
-// #[repr(C)]
-// pub struct TransactionStateData {
-//     fullTransactionId: pg_sys::FullTransactionId,
-//     subTransactionId: pg_sys::SubTransactionId,
-//     name: usize,
-//     savepointLevel: ::std::os::raw::c_int,
-//     // TODO C enums aren't always 1 byte/1 int large, they
-//     // seem to change based on the compiler
-//     state: u8, // There's more stuff here but we don't care about it
-// }
-
 extern "C" {
-    // pub static mut CurrentTransactionState: *mut TransactionStateData;
     fn InitializeTimeouts();
 }
 
@@ -133,43 +124,63 @@ unsafe fn init_pg() -> () {
     }
 }
 
-unsafe fn parse_type(name: &str) -> Option<(pgx::PgOid, i32)> {
+fn parse_type(name: &str) -> (pgx::PgOid, i32) {
     let mut oid: pg_sys::Oid = 0;
     let mut typmods: i32 = 0;
 
-    pg_sys::parseTypeString(
-        CString::new(name).unwrap().into_raw(),
-        &mut oid,
-        &mut typmods,
-        true,
-    );
+    unsafe {
+        pg_sys::parseTypeString(
+            CString::new(name).unwrap().into_raw(),
+            &mut oid,
+            &mut typmods,
+            true,
+        );
+    }
 
-    Some((pgx::PgOid::from(oid), typmods))
+    (pgx::PgOid::from(oid), typmods)
 }
 
-unsafe fn build_attribute(ordinal: i16, name: &str, type_name: &str) -> FormData_pg_attribute {
-    let (oid, typmods) = parse_type(type_name).unwrap();
+fn build_attribute(ordinal: i16, name: &str, type_name: &str) -> FormData_pg_attribute {
+    let (oid, typmods) = parse_type(type_name);
 
-    let tuple = pg_sys::typeidType(oid.value());
-    let pg_type = pg_sys::heap_tuple_get_struct::<pg_sys::FormData_pg_type>(tuple);
+    unsafe {
+        let tuple = pg_sys::typeidType(oid.value());
+        let pg_type = pg_sys::heap_tuple_get_struct::<pg_sys::FormData_pg_type>(tuple);
 
-    let attribute = FormData_pg_attribute {
-        attname: make_name_data(name),
-        atttypid: oid.value(),
-        attlen: (*pg_type).typlen,
-        attnum: ordinal,
-        attbyval: (*pg_type).typbyval,
-        attalign: (*pg_type).typalign,
-        atthasdef: false,
-        ..Default::default()
-    };
+        let attribute = FormData_pg_attribute {
+            attname: make_name_data(name),
+            atttypid: oid.value(),
+            attlen: (*pg_type).typlen,
+            attnum: ordinal,
+            attbyval: (*pg_type).typbyval,
+            attalign: (*pg_type).typalign,
+            atthasdef: false,
+            ..Default::default()
+        };
 
-    pg_sys::ReleaseSysCache(tuple);
+        pg_sys::ReleaseSysCache(tuple);
 
-    attribute
+        attribute
+    }
 }
 
-unsafe fn schema_to_attributes(schema: &str) -> Vec<FormData_pg_attribute> {
+fn create_tuple_desc(
+    attributes: &Vec<FormData_pg_attribute>,
+) -> PgBox<TupleDescData, AllocatedByPostgres> {
+    let mut attrs = attributes
+        .iter()
+        .map(|s| s as *const _ as *mut FormData_pg_attribute)
+        .collect::<Vec<*mut FormData_pg_attribute>>();
+
+    unsafe {
+        PgBox::from_pg(CreateTupleDesc(
+            attrs.len().try_into().unwrap(),
+            attrs.as_mut_ptr(),
+        ))
+    }
+}
+
+fn schema_to_attributes(schema: &str) -> Vec<FormData_pg_attribute> {
     let json: Vec<(i16, String, String, bool)> =
         serde_json::from_str(schema).expect("JSON was not well-formatted");
 
@@ -178,45 +189,54 @@ unsafe fn schema_to_attributes(schema: &str) -> Vec<FormData_pg_attribute> {
         .collect()
 }
 
-unsafe fn do_something() -> () {
-    init_pg();
-    // We need to pretend that we're in a transaction for this
-    pg_sys::StartTransactionCommand();
+fn do_something() -> () {
+    unsafe {
+        init_pg();
+        // We need to pretend that we're in a transaction for this
+        pg_sys::StartTransactionCommand();
+    }
 
-    let mut attrs: [*mut FormData_pg_attribute] = schema_to_attributes(SCHEMA).iter().map(|s| s.borrow_mut()).collect();
+    let attribute_num: usize = 3;
+    let file_path = CString::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b").unwrap();
 
-    let tuple_descriptor = CreateTupleDesc(4, attrs.as_mut_ptr());
+    let all_attrs = schema_to_attributes(SCHEMA);
 
     let mut column_list = PgList::<pg_sys::Var>::new();
     column_list.push(&mut pg_sys::Var {
-        varattno: 3,
-        vartype: 3802,
+        varattno: attribute_num.try_into().unwrap(),
+        vartype: all_attrs[attribute_num].type_oid().value(),
         ..Default::default()
     });
 
-    let file_path = CString::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b").unwrap();
+    let read_state = unsafe {
+        CStoreBeginRead(
+            file_path.as_ptr(),
+            create_tuple_desc(&all_attrs).as_ptr(),
+            column_list.into_pg(),
+            std::ptr::null_mut(),
+        )
+    };
 
-    let read_state = CStoreBeginRead(
-        file_path.as_ptr(),
-        tuple_descriptor,
-        column_list.into_pg(),
-        std::ptr::null_mut(),
-    );
+    let mut column_values: Vec<pg_sys::Datum> = vec![0; attribute_num];
+    let mut column_nulls: Vec<bool> = vec![false; attribute_num];
 
-    let mut column_values = vec![0; 4];
-    let mut column_nulls = vec![false; 4];
+    unsafe {
+        while CStoreReadNextRow(
+            read_state,
+            column_values.as_mut_ptr(),
+            column_nulls.as_mut_ptr(),
+        ) {
+            let date = pgx::JsonB::from_datum(
+                column_values[attribute_num - 1],
+                column_nulls[attribute_num - 1],
+                all_attrs[attribute_num].type_oid().value(),
+            );
+            println!("{:?}", date);
+        }
 
-    while CStoreReadNextRow(
-        read_state,
-        column_values.as_mut_ptr(),
-        column_nulls.as_mut_ptr(),
-    ) {
-        let date = pgx::JsonB::from_datum(column_values[2], column_nulls[2], 3802);
-        println!("{:?}", date);
+        CStoreEndRead(read_state);
+        pg_sys::AbortCurrentTransaction();
     }
-
-    CStoreEndRead(read_state);
-    pg_sys::AbortCurrentTransaction();
 }
 
 fn main() {
@@ -247,7 +267,7 @@ mod tests {
             pg_sys::StartTransactionCommand();
             assert_eq!(
                 parse_type("timestamp with time zone"),
-                Some((PgOid::BuiltIn(PgBuiltInOids::TIMESTAMPTZOID), -1))
+                (PgOid::BuiltIn(PgBuiltInOids::TIMESTAMPTZOID), -1)
             );
             pg_sys::AbortCurrentTransaction();
         }
