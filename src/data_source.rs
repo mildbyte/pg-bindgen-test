@@ -1,6 +1,11 @@
+use std::collections::VecDeque;
 use std::ffi::{CString, OsStr, OsString};
 use std::fs;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
+use datafusion::physical_plan::RecordBatchStream;
+use futures::Stream;
 use std::os::unix::prelude::OsStrExt;
 use std::path::PathBuf;
 use std::{any::Any, sync::Arc};
@@ -8,7 +13,9 @@ use std::{any::Any, sync::Arc};
 use super::postgres::init_pg;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{DataType, Field};
+use datafusion::arrow::error::Result as ArrowResult;
 use datafusion::error::Result;
+use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::{
     arrow::{
         datatypes::{Schema, SchemaRef},
@@ -24,7 +31,7 @@ use datafusion::{
     },
 };
 use pgx::pg_sys::{self, FormData_pg_attribute};
-use pgx::{name_data_to_str, PgList};
+use pgx::{name_data_to_str, AllocatedByPostgres, PgBox, PgList};
 
 use crate::cstore::cstore_schema_to_attributes;
 use crate::cstore::cstore_sys::{CStoreBeginRead, CStoreEndRead, CStoreReadNextRow};
@@ -33,21 +40,23 @@ use crate::postgres;
 
 #[derive(Debug, Clone)]
 pub struct CStoreDataSource {
-    object_path: OsString,
+    object_paths: Vec<OsString>,
     pg_schema: Vec<FormData_pg_attribute>,
 }
 
 impl CStoreDataSource {
-    pub fn new(object_path: &OsStr) -> Self {
-        let schema_json = fs::read_to_string(PathBuf::from(object_path).with_extension("schema"))
-            .expect("Something went wrong reading the file");
+    pub fn new(object_paths: Vec<&OsStr>) -> Self {
+        // Assume the first object's schema is the same as all other ones
+        let schema_json =
+            fs::read_to_string(PathBuf::from(object_paths[0]).with_extension("schema"))
+                .expect("Something went wrong reading the file");
 
         let guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
         let attributes = unsafe { cstore_schema_to_attributes(&schema_json) };
         drop(guard);
 
         Self {
-            object_path: object_path.to_os_string(),
+            object_paths: object_paths.iter().map(|p| p.to_os_string()).collect(),
             pg_schema: attributes,
         }
     }
@@ -168,48 +177,16 @@ impl ExecutionPlan for CStoreExec {
             appenders.push(attr_to_appender_builder(&attr, 1024))
         }
 
-
-        let read_state = unsafe {
-            let c_path = CString::new(self.db.object_path.as_bytes()).unwrap();
-            CStoreBeginRead(
-                c_path.as_ptr(),
-                postgres::create_tuple_desc(&self.db.pg_schema).as_ptr(),
-                column_list.into_pg(),
-                std::ptr::null_mut(),
-            )
+        let stream = CStoreExecStream {
+            object_paths: VecDeque::from(self.db.object_paths),
+            schema: self.projected_schema,
+            projection: self.projections,
+            column_list,
+            appenders: appenders,
+            tuple_desc: postgres::create_tuple_desc(&self.db.pg_schema),
         };
-
-        let mut column_values: Vec<pg_sys::Datum> = vec![0; self.db.pg_schema.len()];
-        let mut column_nulls: Vec<bool> = vec![false; self.db.pg_schema.len()];
-
-        unsafe {
-            while CStoreReadNextRow(
-                read_state,
-                column_values.as_mut_ptr(),
-                column_nulls.as_mut_ptr(),
-            ) {
-                self.projections
-                    .iter()
-                    .enumerate()
-                    .for_each(|(output_num, source_num)| {
-                        appenders[output_num]
-                            .call(column_values[*source_num], column_nulls[*source_num])
-                    });
-            }
-
-            CStoreEndRead(read_state);
-        }
-
         drop(guard);
-
-        Ok(Box::pin(MemoryStream::try_new(
-            vec![RecordBatch::try_new(
-                self.projected_schema.clone(),
-                appenders.iter_mut().map(|b| b.finish()).collect(),
-            )?],
-            self.schema(),
-            None,
-        )?))
+        Ok(Box::pin(stream))
     }
 
     fn statistics(&self) -> Statistics {
@@ -219,6 +196,79 @@ impl ExecutionPlan for CStoreExec {
             column_statistics: None,
             is_exact: false,
         }
+    }
+}
+
+struct CStoreExecStream {
+    object_paths: VecDeque<OsString>,
+    schema: SchemaRef,
+    projection: Vec<usize>,
+    column_list: PgList<pg_sys::Var>,
+    appenders: Vec<Box<dyn DatumAppender>>,
+    tuple_desc: PgBox<pg_sys::TupleDescData, AllocatedByPostgres>,
+}
+
+impl CStoreExecStream {}
+
+impl Iterator for CStoreExecStream {
+    type Item = ArrowResult<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.object_paths.pop_front() {
+            None => None,
+            Some(object_path) => {
+                let guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
+                let read_state = unsafe {
+                    let c_path = CString::new(object_path.as_bytes()).unwrap();
+                    CStoreBeginRead(
+                        c_path.as_ptr(),
+                        self.tuple_desc.as_ptr(),
+                        self.column_list.into_pg(),
+                        std::ptr::null_mut(),
+                    )
+                };
+
+                let mut column_values: Vec<pg_sys::Datum> = vec![0; self.tuple_desc.natts as usize];
+                let mut column_nulls: Vec<bool> = vec![false; self.tuple_desc.natts as usize];
+                unsafe {
+                    while CStoreReadNextRow(
+                        read_state,
+                        column_values.as_mut_ptr(),
+                        column_nulls.as_mut_ptr(),
+                    ) {
+                        self.projection
+                            .iter()
+                            .enumerate()
+                            .for_each(|(output_num, source_num)| {
+                                self.appenders[output_num]
+                                    .call(column_values[*source_num], column_nulls[*source_num])
+                            });
+                    }
+
+                    CStoreEndRead(read_state);
+                }
+
+                drop(guard);
+                Some(RecordBatch::try_new(
+                    self.schema.clone(),
+                    self.appenders.iter_mut().map(|b| b.finish()).collect(),
+                ))
+            }
+        }
+    }
+}
+
+impl Stream for CStoreExecStream {
+    type Item = ArrowResult<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Poll::Ready(Iterator::next(&mut *self))
+    }
+}
+
+impl RecordBatchStream for CStoreExecStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
     }
 }
 
@@ -250,7 +300,7 @@ mod tests {
             init_pg();
         }
 
-        let data_source = CStoreDataSource::new(OsStr::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b"));
+        let data_source = CStoreDataSource::new(vec![OsStr::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b")]);
 
         assert_eq!(
             *data_source.schema().fields(),
@@ -268,7 +318,7 @@ mod tests {
         unsafe {
             init_pg();
         }
-        let data_source = CStoreDataSource::new(OsStr::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b"));
+        let data_source = CStoreDataSource::new(vec![OsStr::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b")]);
 
         let ctx = SessionContext::new();
 
