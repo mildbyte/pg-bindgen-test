@@ -83,6 +83,14 @@ pub unsafe fn init_pg() -> () {
             std::ptr::null_mut(),
             false,
         );
+
+        pg_sys::StartTransactionCommand();
+
+        // Technically we should wrap PG operations in StartTransactionCommand/AbortCurrentTransaction
+        // to be friendly to the internal state. But we're not actually accepting connections here
+        // or doing anything other than scanning through internal catalog tables for operators/types.
+        // So, we're effectively running a really long transaction that never ends. This is simpler
+        // to organize than figuring out how (and at what granularity) to wrap code that calls into PG.
     }
 }
 
@@ -175,12 +183,10 @@ mod tests {
     fn parse_type_basic() {
         unsafe {
             init_pg();
-            pg_sys::StartTransactionCommand();
             assert_eq!(
                 crate::postgres::parse_type("timestamp with time zone"),
                 (PgOid::BuiltIn(PgBuiltInOids::TIMESTAMPTZOID), -1)
             );
-            pg_sys::AbortCurrentTransaction();
         }
     }
 
@@ -188,13 +194,11 @@ mod tests {
     fn build_attribute_basic() {
         unsafe {
             init_pg();
-            pg_sys::StartTransactionCommand();
             let attribute = build_attribute(1, "col_name", "timestamp with time zone");
             assert_eq!(
                 attribute.type_oid(),
                 PgOid::BuiltIn(PgBuiltInOids::TIMESTAMPTZOID)
             );
-            pg_sys::AbortCurrentTransaction();
         }
     }
 }

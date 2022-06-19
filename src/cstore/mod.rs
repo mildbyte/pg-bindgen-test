@@ -24,8 +24,6 @@ pub fn cstore_schema_to_attributes(schema: &str) -> Vec<FormData_pg_attribute> {
 pub fn do_something() -> () {
     unsafe {
         postgres::init_pg();
-        // We need to pretend that we're in a transaction for this
-        pg_sys::StartTransactionCommand();
     }
 
     let attribute_num: usize = 3;
@@ -91,13 +89,11 @@ mod tests {
     fn cstore_schema_to_attributes_basic() {
         unsafe {
             init_pg();
-            pg_sys::StartTransactionCommand();
             let schema = r#"[[1, "_airbyte_emitted_at", "timestamp with time zone", true], [2, "_airbyte_ab_id", "character varying", true], [3, "_airbyte_data", "jsonb", false], [4, "sg_ud_flag", "boolean", false]]"#;
             let attributes = cstore_schema_to_attributes(schema);
 
             assert_eq!(attributes.len(), 4);
             assert_eq!(attributes[0].name(), "_airbyte_emitted_at");
-            pg_sys::AbortCurrentTransaction();
         }
     }
 }

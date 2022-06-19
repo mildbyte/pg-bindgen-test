@@ -40,12 +40,7 @@ impl CStoreDataSource {
         let schema_json = fs::read_to_string(object_path.to_owned() + ".schema")
             .expect("Something went wrong reading the file");
 
-        let attributes = unsafe {
-            StartTransactionCommand();
-            let attributes = cstore_schema_to_attributes(&schema_json);
-            AbortCurrentTransaction();
-            attributes
-        };
+        let attributes = unsafe { cstore_schema_to_attributes(&schema_json) };
 
         Self {
             object_path: object_path.to_string(),
@@ -198,7 +193,6 @@ impl ExecutionPlan for CStoreExec {
             }
 
             CStoreEndRead(read_state);
-            pg_sys::AbortCurrentTransaction();
         }
 
         Ok(Box::pin(MemoryStream::try_new(
