@@ -205,7 +205,12 @@ impl ExecutionPlan for CStoreExec {
     }
 
     fn statistics(&self) -> Statistics {
-        todo!()
+        Statistics {
+            num_rows: None,
+            total_byte_size: None,
+            column_statistics: None,
+            is_exact: false,
+        }
     }
 }
 
