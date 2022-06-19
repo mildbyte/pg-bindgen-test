@@ -42,7 +42,9 @@ impl CStoreDataSource {
         let schema_json = fs::read_to_string(PathBuf::from(object_path).with_extension("schema"))
             .expect("Something went wrong reading the file");
 
+        let guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
         let attributes = unsafe { cstore_schema_to_attributes(&schema_json) };
+        drop(guard);
 
         Self {
             object_path: object_path.to_os_string(),
@@ -153,6 +155,9 @@ impl ExecutionPlan for CStoreExec {
         // NB: from testing this with an expression selecting the same column with two aliases, self.projections
         // doesn't repeat columns, so we won't be doing extra work.
 
+        // Because PostgreSQL isn't multi-threaded, we have to do this whole read
+        // in a critical section. This code hits things like SysCaches etc.
+        let guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
         for i in &self.projections {
             let attr = self.db.pg_schema[*i];
             column_list.push(&mut pg_sys::Var {
@@ -162,6 +167,7 @@ impl ExecutionPlan for CStoreExec {
             });
             appenders.push(attr_to_appender_builder(&attr, 1024))
         }
+
 
         let read_state = unsafe {
             let c_path = CString::new(self.db.object_path.as_bytes()).unwrap();
@@ -193,6 +199,8 @@ impl ExecutionPlan for CStoreExec {
 
             CStoreEndRead(read_state);
         }
+
+        drop(guard);
 
         Ok(Box::pin(MemoryStream::try_new(
             vec![RecordBatch::try_new(

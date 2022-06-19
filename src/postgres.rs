@@ -1,18 +1,16 @@
 use lazy_static::lazy_static;
-use pgx::pg_sys;
+use pgx::{
+    pg_sys::{self, AsPgCStr},
+    PgMemoryContexts,
+};
 use std::{
     ffi::CString,
     sync::{LockResult, Mutex, MutexGuard},
 };
 
-// lazy_static! {
-//     static ref PG_INTERNALS_LOCK: Mutex<()> = Mutex::new(());
-//     static ref ONETIME_SETUP: () = {
-//         unsafe {
-//             pg_sys::MemoryContextInit();
-//         }
-//     };
-// }
+lazy_static! {
+    pub static ref PG_INTERNALS_LOCK: Mutex<()> = Mutex::new(());
+}
 
 // Build pg with
 // CFLAGS="-fPIC -ggdb -Og -g3 -fno-omit-frame-pointer" LDFLAGS_EX="--shared" ./configure --enable-cassert --enable-debug
