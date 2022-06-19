@@ -91,6 +91,15 @@ pub unsafe fn init_pg() -> () {
         // or doing anything other than scanning through internal catalog tables for operators/types.
         // So, we're effectively running a really long transaction that never ends. This is simpler
         // to organize than figuring out how (and at what granularity) to wrap code that calls into PG.
+
+        // TODO: figure out memory contexts and shared locking
+        pg_sys::AllocSetContextCreateExtended(
+            PgMemoryContexts::CurrentMemoryContext.value(),
+            "Execution context".as_pg_cstr(),
+            pg_sys::ALLOCSET_DEFAULT_MINSIZE as usize,
+            pg_sys::ALLOCSET_DEFAULT_INITSIZE as usize,
+            (pg_sys::ALLOCSET_DEFAULT_MAXSIZE * 16) as usize,
+        );
     }
 }
 
