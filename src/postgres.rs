@@ -161,14 +161,6 @@ pub fn create_tuple_desc(
     }
 }
 
-// outputting an arbitrary Datum as a string
-//
-// getTypeOutputInfo(attr->atttypid,
-//     &thisState->typoutput,
-//     &thisState->typisvarlena);
-// fmgr_info(thisState->typoutput, &thisState->finfo);
-// outputstr = OutputFunctionCall(&thisState->finfo, datum);
-
 #[cfg(test)]
 mod tests {
 
