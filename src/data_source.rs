@@ -1,11 +1,10 @@
 use std::ffi::CString;
 use std::fs;
-use std::iter::zip;
+
 use std::{any::Any, sync::Arc};
 
 use super::postgres::init_pg;
 use async_trait::async_trait;
-use datafusion::arrow::array::{ArrayBuilder, BooleanBuilder, UInt64Builder, UInt8Builder};
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::error::Result;
 use datafusion::{
@@ -22,14 +21,12 @@ use datafusion::{
         memory::MemoryStream, project_schema, ExecutionPlan, SendableRecordBatchStream, Statistics,
     },
 };
-use pgx::pg_sys::{
-    self, AbortCurrentTransaction, Datum, FormData_pg_attribute, InvalidOid,
-    StartTransactionCommand,
-};
-use pgx::{name_data_to_str, FromDatum, PgList};
+use pgx::pg_sys::{self, AbortCurrentTransaction, FormData_pg_attribute, StartTransactionCommand};
+use pgx::{name_data_to_str, PgList};
 
 use crate::cstore::cstore_schema_to_attributes;
 use crate::cstore::cstore_sys::{CStoreBeginRead, CStoreEndRead, CStoreReadNextRow};
+use crate::pg_to_arrow::prepare_conversions;
 use crate::postgres;
 
 #[derive(Debug, Clone)]
@@ -116,29 +113,6 @@ impl CStoreExec {
     }
 }
 
-macro_rules! append_datum {
-    ($name:tt, $datum_type:ident, $builder_type:ident) => {
-        fn $name(datum: Datum, is_null: bool, builder: &mut Box<dyn ArrayBuilder>) {
-            builder
-                .as_any_mut()
-                .downcast_mut::<$builder_type>()
-                .unwrap()
-                .append_option(unsafe { $datum_type::from_datum(datum, is_null, InvalidOid) })
-                .unwrap();
-        }
-    };
-}
-
-append_datum!(append_bool, bool, BooleanBuilder);
-
-type DatumAppender = fn(Datum, bool, &mut Box<dyn ArrayBuilder>) -> ();
-
-fn prepare_conversions(
-    pg_schema: &Vec<FormData_pg_attribute>,
-) -> (Vec<DatumAppender>, Vec<Box<dyn ArrayBuilder>>) {
-    (vec![append_bool], vec![Box::new(BooleanBuilder::new(1024))])
-}
-
 impl ExecutionPlan for CStoreExec {
     fn as_any(&self) -> &dyn Any {
         self
@@ -219,11 +193,7 @@ impl ExecutionPlan for CStoreExec {
                 // fewer appenders so we won't be able to just zip like this
 
                 for i in 0..self.db.pg_schema.len() {
-                    appenders[i](
-                        column_values[i],
-                        column_nulls[i],
-                        data_builders.get_mut(i).unwrap(),
-                    );
+                    appenders[i](column_values[i], column_nulls[i], &mut data_builders[i]);
                 }
             }
 
