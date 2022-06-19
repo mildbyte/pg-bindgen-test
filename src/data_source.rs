@@ -1,6 +1,8 @@
-use std::ffi::CString;
+use std::ffi::{CString, OsStr, OsString};
 use std::fs;
 
+use std::os::unix::prelude::OsStrExt;
+use std::path::PathBuf;
 use std::{any::Any, sync::Arc};
 
 use super::postgres::init_pg;
@@ -21,7 +23,7 @@ use datafusion::{
         memory::MemoryStream, project_schema, ExecutionPlan, SendableRecordBatchStream, Statistics,
     },
 };
-use pgx::pg_sys::{self, AbortCurrentTransaction, FormData_pg_attribute, StartTransactionCommand};
+use pgx::pg_sys::{self, FormData_pg_attribute};
 use pgx::{name_data_to_str, PgList};
 
 use crate::cstore::cstore_schema_to_attributes;
@@ -31,19 +33,19 @@ use crate::postgres;
 
 #[derive(Debug, Clone)]
 pub struct CStoreDataSource {
-    object_path: String,
+    object_path: OsString,
     pg_schema: Vec<FormData_pg_attribute>,
 }
 
 impl CStoreDataSource {
-    fn new(object_path: &str) -> Self {
-        let schema_json = fs::read_to_string(object_path.to_owned() + ".schema")
+    pub fn new(object_path: &OsStr) -> Self {
+        let schema_json = fs::read_to_string(PathBuf::from(object_path).with_extension("schema"))
             .expect("Something went wrong reading the file");
 
         let attributes = unsafe { cstore_schema_to_attributes(&schema_json) };
 
         Self {
-            object_path: object_path.to_string(),
+            object_path: object_path.to_os_string(),
             pg_schema: attributes,
         }
     }
@@ -148,7 +150,7 @@ impl ExecutionPlan for CStoreExec {
         let mut column_list = PgList::<pg_sys::Var>::new();
         let mut appenders: Vec<Box<dyn DatumAppender>> = Vec::with_capacity(self.projections.len());
 
-        // NB: from testing this with an expression selecting the same column with two aliases, self.projectsions
+        // NB: from testing this with an expression selecting the same column with two aliases, self.projections
         // doesn't repeat columns, so we won't be doing extra work.
 
         for i in &self.projections {
@@ -162,7 +164,7 @@ impl ExecutionPlan for CStoreExec {
         }
 
         let read_state = unsafe {
-            let c_path = CString::new(self.db.object_path.as_str()).unwrap();
+            let c_path = CString::new(self.db.object_path.as_bytes()).unwrap();
             CStoreBeginRead(
                 c_path.as_ptr(),
                 postgres::create_tuple_desc(&self.db.pg_schema).as_ptr(),
@@ -209,7 +211,10 @@ impl ExecutionPlan for CStoreExec {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        ffi::{OsStr, OsString},
+        sync::Arc,
+    };
 
     use datafusion::{
         arrow::datatypes::{DataType, Field},
@@ -232,7 +237,7 @@ mod tests {
             init_pg();
         }
 
-        let data_source = CStoreDataSource::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b");
+        let data_source = CStoreDataSource::new(OsStr::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b"));
 
         assert_eq!(
             *data_source.schema().fields(),
@@ -250,7 +255,7 @@ mod tests {
         unsafe {
             init_pg();
         }
-        let data_source = CStoreDataSource::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b");
+        let data_source = CStoreDataSource::new(OsStr::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b"));
 
         let ctx = SessionContext::new();
 
