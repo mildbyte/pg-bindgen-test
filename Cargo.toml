@@ -11,5 +11,12 @@ datafusion = "9.0.0"
 async-trait = "0.1.41"
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync", "fs", "parking_lot"] }
 
+# for the CLI
+clap = { version = "3", features = ["derive", "cargo"] }
+datafusion-cli = "9.0.0"
+mimalloc = { version = "0.1", default-features = false }
+dirs = "4.0.0"
+env_logger = "0.9"
+
 [build-dependencies]
 bindgen = "0.60.1"
