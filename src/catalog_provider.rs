@@ -31,6 +31,20 @@ pub struct CStoreSchemaProvider {
     basepath: String,
 }
 
+fn is_valid_cstore_file(r: &PathBuf) -> bool {
+    if !r.is_file() {
+        return false;
+    }
+    let file_name = r.file_name().unwrap().to_str().unwrap().to_string();
+    if file_name.ends_with(".footer") || file_name.ends_with(".schema") {
+        return false;
+    }
+    if !r.with_extension("schema").exists() || !r.with_extension("footer").exists() {
+        return false;
+    }
+    return true;
+}
+
 impl SchemaProvider for CStoreSchemaProvider {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -42,9 +56,8 @@ impl SchemaProvider for CStoreSchemaProvider {
             .into_iter()
             .filter(|r| r.is_ok())
             .map(|r| r.unwrap().path())
-            .filter(|r| r.is_file())
+            .filter(is_valid_cstore_file)
             .map(|r| r.file_name().unwrap().to_str().unwrap().to_string())
-            .filter(|n| !n.ends_with(".footer") && !n.ends_with(".schema"))
             .collect()
     }
 
