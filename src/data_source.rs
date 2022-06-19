@@ -26,7 +26,7 @@ use pgx::{name_data_to_str, PgList};
 
 use crate::cstore::cstore_schema_to_attributes;
 use crate::cstore::cstore_sys::{CStoreBeginRead, CStoreEndRead, CStoreReadNextRow};
-use crate::pg_to_arrow::prepare_conversions;
+use crate::pg_to_arrow::{attr_to_appender_builder, DatumAppender};
 use crate::postgres;
 
 #[derive(Debug, Clone)]
@@ -141,13 +141,13 @@ impl ExecutionPlan for CStoreExec {
         _partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        // Here:
-        //   -> CStoreBeginScan?
-        //   -> need to return a vec of array refs
-        //   -> so we need to have an array of PrimitiveBuilder arrays (vec of dyn PrimitiveBuilders?)
-        //   -> also a map of OIDs to output functions and types (so DataType and a Fn of Datum, &mut ArrayBuilder -> ())
-
-        let (appenders, mut data_builders) = prepare_conversions(&self.db.pg_schema);
+        // Prepare a list of array builders that will put PG datum objects to arrays
+        let mut appenders: Vec<Box<dyn DatumAppender>> = self
+            .db
+            .pg_schema
+            .iter()
+            .map(|a| attr_to_appender_builder(a, 1024))
+            .collect();
 
         // Let's roll
 
@@ -188,7 +188,7 @@ impl ExecutionPlan for CStoreExec {
                 // fewer appenders so we won't be able to just zip like this
 
                 for i in 0..self.db.pg_schema.len() {
-                    appenders[i](column_values[i], column_nulls[i], &mut data_builders[i]);
+                    appenders[i].call(column_values[i], column_nulls[i]);
                 }
             }
 
@@ -198,7 +198,7 @@ impl ExecutionPlan for CStoreExec {
         Ok(Box::pin(MemoryStream::try_new(
             vec![RecordBatch::try_new(
                 self.projected_schema.clone(),
-                data_builders.iter_mut().map(|b| b.finish()).collect(),
+                appenders.iter_mut().map(|b| b.finish()).collect(),
             )?],
             self.schema(),
             None,
