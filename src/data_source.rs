@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CString, OsString};
 use std::fs;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -10,12 +10,12 @@ use std::os::unix::prelude::OsStrExt;
 use std::path::PathBuf;
 use std::{any::Any, sync::Arc};
 
-use super::postgres::init_pg;
+
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{DataType, Field};
+use datafusion::arrow::datatypes::{Field};
 use datafusion::arrow::error::Result as ArrowResult;
 use datafusion::error::Result;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+
 use datafusion::{
     arrow::{
         datatypes::{Schema, SchemaRef},
@@ -27,7 +27,7 @@ use datafusion::{
     logical_plan::Expr,
     physical_expr::PhysicalSortExpr,
     physical_plan::{
-        memory::MemoryStream, project_schema, ExecutionPlan, SendableRecordBatchStream, Statistics,
+        project_schema, ExecutionPlan, SendableRecordBatchStream, Statistics,
     },
 };
 use pgx::pg_sys::{self, FormData_pg_attribute};
@@ -45,10 +45,10 @@ pub struct CStoreDataSource {
 }
 
 impl CStoreDataSource {
-    pub fn new(object_paths: Vec<&OsStr>) -> Self {
+    pub fn new(object_paths: Vec<OsString>) -> Self {
         // Assume the first object's schema is the same as all other ones
         let schema_json =
-            fs::read_to_string(PathBuf::from(object_paths[0]).with_extension("schema"))
+            fs::read_to_string(PathBuf::from(&object_paths[0]).with_extension("schema"))
                 .expect("Something went wrong reading the file");
 
         let guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
@@ -178,9 +178,9 @@ impl ExecutionPlan for CStoreExec {
         }
 
         let stream = CStoreExecStream {
-            object_paths: VecDeque::from(self.db.object_paths),
-            schema: self.projected_schema,
-            projection: self.projections,
+            object_paths: VecDeque::from(self.db.object_paths.clone()),
+            schema: self.projected_schema.to_owned(),
+            projection: self.projections.clone(),
             column_list,
             appenders: appenders,
             tuple_desc: postgres::create_tuple_desc(&self.db.pg_schema),
@@ -210,6 +210,9 @@ struct CStoreExecStream {
 
 impl CStoreExecStream {}
 
+// YOLO
+unsafe impl Send for CStoreExecStream {}
+
 impl Iterator for CStoreExecStream {
     type Item = ArrowResult<RecordBatch>;
 
@@ -223,7 +226,7 @@ impl Iterator for CStoreExecStream {
                     CStoreBeginRead(
                         c_path.as_ptr(),
                         self.tuple_desc.as_ptr(),
-                        self.column_list.into_pg(),
+                        self.column_list.as_ptr(),
                         std::ptr::null_mut(),
                     )
                 };
@@ -275,7 +278,7 @@ impl RecordBatchStream for CStoreExecStream {
 #[cfg(test)]
 mod tests {
     use std::{
-        ffi::{OsStr, OsString},
+        ffi::{OsString},
         sync::Arc,
     };
 
@@ -300,7 +303,7 @@ mod tests {
             init_pg();
         }
 
-        let data_source = CStoreDataSource::new(vec![OsStr::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b")]);
+        let data_source = CStoreDataSource::new(vec![OsString::from("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b")]);
 
         assert_eq!(
             *data_source.schema().fields(),
@@ -318,7 +321,7 @@ mod tests {
         unsafe {
             init_pg();
         }
-        let data_source = CStoreDataSource::new(vec![OsStr::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b")]);
+        let data_source = CStoreDataSource::new(vec![OsString::from("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b")]);
 
         let ctx = SessionContext::new();
 
@@ -333,7 +336,7 @@ mod tests {
         .build()
         .unwrap();
 
-        let mut dataframe = DataFrame::new(ctx.state, &logical_plan)
+        let dataframe = DataFrame::new(ctx.state, &logical_plan)
             .select(vec![
                 Expr::Alias(Box::new(col("_airbyte_emitted_at")), "col1".to_string()),
                 Expr::Alias(Box::new(col("_airbyte_emitted_at")), "col2".to_string()),

@@ -1,6 +1,6 @@
 pub mod cstore_sys;
 
-use std::{any::Any, ffi::CString};
+use std::{ffi::CString};
 
 use super::postgres;
 
@@ -72,7 +72,7 @@ pub fn do_something() -> () {
 #[cfg(test)]
 mod tests {
 
-    use pgx::pg_sys::{self};
+    
 
     use crate::{cstore::cstore_schema_to_attributes, postgres::init_pg};
 

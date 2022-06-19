@@ -20,7 +20,7 @@ impl CatalogProvider for CStoreCatalogProvider {
         vec!["public".to_string()]
     }
 
-    fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
+    fn schema(&self, _name: &str) -> Option<Arc<dyn SchemaProvider>> {
         return Some(Arc::new(CStoreSchemaProvider {
             basepath: self.basepath.clone(),
         }));
@@ -51,19 +51,21 @@ impl SchemaProvider for CStoreSchemaProvider {
     }
 
     fn table_names(&self) -> Vec<String> {
-        fs::read_dir(&self.basepath)
+        vec!["table".to_string()]
+    }
+
+    fn table(&self, _name: &str) -> Option<Arc<dyn TableProvider>> {
+        let paths = fs::read_dir(&self.basepath)
             .unwrap()
             .into_iter()
             .filter(|r| r.is_ok())
             .map(|r| r.unwrap().path())
             .filter(is_valid_cstore_file)
             .map(|r| r.file_name().unwrap().to_str().unwrap().to_string())
-            .collect()
-    }
+            .map(|f| PathBuf::from(&self.basepath).join(f).to_owned().as_os_str().to_owned())
+            .collect();
 
-    fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
-        let path = PathBuf::from(&self.basepath).join(name);
-        let data_source = CStoreDataSource::new(path.as_os_str());
+        let data_source = CStoreDataSource::new(paths);
         Some(Arc::new(data_source))
     }
 

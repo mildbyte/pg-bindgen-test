@@ -1,11 +1,10 @@
 use lazy_static::lazy_static;
 use pgx::{
-    pg_sys::{self, AsPgCStr},
-    PgMemoryContexts,
+    pg_sys::{self, AsPgCStr}, PgMemoryContexts,
 };
 use std::{
     ffi::CString,
-    sync::{LockResult, Mutex, MutexGuard},
+    sync::{Mutex},
 };
 
 lazy_static! {
@@ -129,7 +128,7 @@ pub fn parse_type(name: &str) -> (pgx::PgOid, i32) {
 // - TupleConstraints->defval
 // - attname (for errors)
 pub fn build_attribute(ordinal: i16, name: &str, type_name: &str) -> pg_sys::FormData_pg_attribute {
-    let (oid, typmods) = parse_type(type_name);
+    let (oid, _typmods) = parse_type(type_name);
 
     unsafe {
         let tuple = pg_sys::typeidType(oid.value());
@@ -172,7 +171,6 @@ pub fn create_tuple_desc(
 mod tests {
 
     use pgx::{
-        pg_sys::{self},
         PgBuiltInOids, PgOid,
     };
 
