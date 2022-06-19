@@ -26,7 +26,7 @@ use pgx::{name_data_to_str, PgList};
 
 use crate::cstore::cstore_schema_to_attributes;
 use crate::cstore::cstore_sys::{CStoreBeginRead, CStoreEndRead, CStoreReadNextRow};
-use crate::pg_to_arrow::{attr_to_appender_builder, DatumAppender};
+use crate::pg_to_arrow::{attr_to_appender_builder, pg_oid_to_arrow_datatype, DatumAppender};
 use crate::postgres;
 
 #[derive(Debug, Clone)]
@@ -60,7 +60,7 @@ impl CStoreDataSource {
 fn pg_attribute_to_field(pg_attribute: &FormData_pg_attribute) -> Field {
     Field::new(
         name_data_to_str(&pg_attribute.attname),
-        DataType::Binary,
+        pg_oid_to_arrow_datatype(pg_attribute.type_oid()),
         true,
     )
 }
@@ -96,6 +96,7 @@ impl TableProvider for CStoreDataSource {
 struct CStoreExec {
     db: CStoreDataSource,
     projected_schema: SchemaRef,
+    projections: Vec<usize>,
 }
 
 impl CStoreExec {
@@ -104,6 +105,9 @@ impl CStoreExec {
         Self {
             db,
             projected_schema,
+            projections: projections
+                .clone()
+                .unwrap_or((0..schema.fields().len()).collect()),
         }
     }
 }
@@ -141,28 +145,20 @@ impl ExecutionPlan for CStoreExec {
         _partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        // Prepare a list of array builders that will put PG datum objects to arrays
-        let mut appenders: Vec<Box<dyn DatumAppender>> = self
-            .db
-            .pg_schema
-            .iter()
-            .map(|a| attr_to_appender_builder(a, 1024))
-            .collect();
-
-        // Let's roll
-
-        // Prepare a list of columns that CStore uses to select just the required parts
-        // TODO: we actually don't know this, we need to run that projection operation on our vector of
-        // pg attributes
-        // right now we pretend to select all columns
         let mut column_list = PgList::<pg_sys::Var>::new();
+        let mut appenders: Vec<Box<dyn DatumAppender>> = Vec::with_capacity(self.projections.len());
 
-        for attr in &self.db.pg_schema {
+        // NB: from testing this with an expression selecting the same column with two aliases, self.projectsions
+        // doesn't repeat columns, so we won't be doing extra work.
+
+        for i in &self.projections {
+            let attr = self.db.pg_schema[*i];
             column_list.push(&mut pg_sys::Var {
                 varattno: attr.num(),
                 vartype: attr.type_oid().value(),
                 ..Default::default()
-            })
+            });
+            appenders.push(attr_to_appender_builder(&attr, 1024))
         }
 
         let read_state = unsafe {
@@ -184,12 +180,13 @@ impl ExecutionPlan for CStoreExec {
                 column_values.as_mut_ptr(),
                 column_nulls.as_mut_ptr(),
             ) {
-                // NB: we have as many vals/nulls as the original schema, but we'll have
-                // fewer appenders so we won't be able to just zip like this
-
-                for i in 0..self.db.pg_schema.len() {
-                    appenders[i].call(column_values[i], column_nulls[i]);
-                }
+                self.projections
+                    .iter()
+                    .enumerate()
+                    .for_each(|(output_num, source_num)| {
+                        appenders[output_num]
+                            .call(column_values[*source_num], column_nulls[*source_num])
+                    });
             }
 
             CStoreEndRead(read_state);
@@ -212,14 +209,22 @@ impl ExecutionPlan for CStoreExec {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use datafusion::{
         arrow::datatypes::{DataType, Field},
+        dataframe::DataFrame,
         datasource::TableProvider,
+        logical_plan::{col, provider_as_source, Expr, LogicalPlanBuilder},
+        prelude::SessionContext,
     };
 
     use crate::postgres::init_pg;
 
     use super::CStoreDataSource;
+
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     #[test]
     fn data_source_initialization() {
@@ -238,5 +243,41 @@ mod tests {
                 Field::new("sg_ud_flag", DataType::Binary, true)
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn data_source_execution() {
+        unsafe {
+            init_pg();
+        }
+        let data_source = CStoreDataSource::new("/home/mildbyte/pg-bindgen-test/data/o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b");
+
+        let ctx = SessionContext::new();
+
+        // create logical plan composed of a single TableScan
+        let logical_plan = LogicalPlanBuilder::scan_with_filters(
+            "test",
+            provider_as_source(Arc::new(data_source)),
+            None,
+            vec![],
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        let mut dataframe = DataFrame::new(ctx.state, &logical_plan)
+            .select(vec![
+                Expr::Alias(Box::new(col("_airbyte_emitted_at")), "col1".to_string()),
+                Expr::Alias(Box::new(col("_airbyte_emitted_at")), "col2".to_string()),
+            ])
+            .unwrap();
+
+        timeout(Duration::from_secs(10), async move {
+            let result = dataframe.collect().await.unwrap();
+            let record_batch = result.get(0).unwrap();
+            dbg!(record_batch.columns());
+        })
+        .await
+        .unwrap();
     }
 }
