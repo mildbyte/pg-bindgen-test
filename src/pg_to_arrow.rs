@@ -8,7 +8,7 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use pgx::pg_sys::{self, Datum, FmgrInfo, FormData_pg_attribute, InvalidOid, Oid};
-use pgx::{FromDatum, PgBuiltInOids as O, PgOid};
+use pgx::{FromDatum, Numeric, PgBuiltInOids as O, PgOid};
 
 // type DatumAppender = dyn Fn(Datum, bool, &mut Box<dyn ArrayBuilder>) -> ();
 
@@ -183,6 +183,37 @@ impl DatumAppender for TimestampAppender {
     }
 }
 
+struct NumericAppender {
+    builder: Box<Float64Builder>,
+}
+
+impl NumericAppender {
+    fn new(capacity: usize) -> Self {
+        Self {
+            builder: Box::new(Float64Builder::new(capacity)),
+        }
+    }
+}
+
+impl DatumAppender for NumericAppender {
+    fn call(&mut self, datum: Datum, is_null: bool) {
+        if is_null {
+            self.builder.append_null().unwrap();
+        } else {
+            self.builder
+                .append_value(
+                    unsafe { Numeric::from_datum(datum, is_null, InvalidOid) }
+                        .and_then(|n| n.to_string().parse::<f64>().ok())
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+    }
+    fn finish(&mut self) -> ArrayRef {
+        Arc::new(self.builder.finish())
+    }
+}
+
 pub fn pg_oid_to_arrow_datatype(oid: PgOid) -> DataType {
     match oid {
         PgOid::InvalidOid => DataType::Null,
@@ -261,7 +292,7 @@ pub fn attr_to_appender_builder(
             O::INT8OID => Box::new(Int8Appender::new(capacity)),
             O::FLOAT4OID => Box::new(Float4Appender::new(capacity)),
             O::FLOAT8OID => Box::new(Float8Appender::new(capacity)),
-            O::NUMERICOID => Box::new(Float8Appender::new(capacity)),
+            O::NUMERICOID => Box::new(NumericAppender::new(capacity)),
             O::DATEOID => Box::new(DateAppender::new(capacity)),
             O::TIMESTAMPOID | O::TIMESTAMPTZOID => Box::new(TimestampAppender::new(capacity)),
             O::TIMEOID | O::TIMETZOID => Box::new(TimeAppender::new(capacity)),
