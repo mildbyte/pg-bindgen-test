@@ -1,11 +1,9 @@
 use lazy_static::lazy_static;
 use pgx::{
-    pg_sys::{self, AsPgCStr}, PgMemoryContexts,
+    pg_sys::{self, AsPgCStr},
+    PgMemoryContexts,
 };
-use std::{
-    ffi::CString,
-    sync::{Mutex},
-};
+use std::{ffi::CString, sync::Mutex};
 
 lazy_static! {
     pub static ref PG_INTERNALS_LOCK: Mutex<()> = Mutex::new(());
@@ -170,9 +168,7 @@ pub fn create_tuple_desc(
 #[cfg(test)]
 mod tests {
 
-    use pgx::{
-        PgBuiltInOids, PgOid,
-    };
+    use pgx::{PgBuiltInOids, PgOid};
 
     use crate::postgres::{build_attribute, init_pg};
 

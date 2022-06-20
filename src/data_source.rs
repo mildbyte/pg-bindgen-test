@@ -10,9 +10,8 @@ use std::os::unix::prelude::OsStrExt;
 use std::path::PathBuf;
 use std::{any::Any, sync::Arc};
 
-
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{Field};
+use datafusion::arrow::datatypes::Field;
 use datafusion::arrow::error::Result as ArrowResult;
 use datafusion::error::Result;
 
@@ -26,9 +25,7 @@ use datafusion::{
     logical_expr::TableType,
     logical_plan::Expr,
     physical_expr::PhysicalSortExpr,
-    physical_plan::{
-        project_schema, ExecutionPlan, SendableRecordBatchStream, Statistics,
-    },
+    physical_plan::{project_schema, ExecutionPlan, SendableRecordBatchStream, Statistics},
 };
 use pgx::pg_sys::{self, FormData_pg_attribute};
 use pgx::{name_data_to_str, AllocatedByPostgres, PgBox, PgList};
@@ -182,7 +179,7 @@ impl ExecutionPlan for CStoreExec {
             schema: self.projected_schema.to_owned(),
             projection: self.projections.clone(),
             column_list,
-            appenders: appenders,
+            appenders,
             tuple_desc: postgres::create_tuple_desc(&self.db.pg_schema),
         };
         drop(guard);
@@ -277,10 +274,7 @@ impl RecordBatchStream for CStoreExecStream {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        ffi::{OsString},
-        sync::Arc,
-    };
+    use std::{ffi::OsString, sync::Arc};
 
     use datafusion::{
         arrow::datatypes::{DataType, Field},

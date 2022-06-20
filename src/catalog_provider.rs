@@ -55,6 +55,7 @@ impl SchemaProvider for CStoreSchemaProvider {
     }
 
     fn table(&self, _name: &str) -> Option<Arc<dyn TableProvider>> {
+        // TODO: here we actually do want to order objects by how they show up
         let paths = fs::read_dir(&self.basepath)
             .unwrap()
             .into_iter()
@@ -62,7 +63,13 @@ impl SchemaProvider for CStoreSchemaProvider {
             .map(|r| r.unwrap().path())
             .filter(is_valid_cstore_file)
             .map(|r| r.file_name().unwrap().to_str().unwrap().to_string())
-            .map(|f| PathBuf::from(&self.basepath).join(f).to_owned().as_os_str().to_owned())
+            .map(|f| {
+                PathBuf::from(&self.basepath)
+                    .join(f)
+                    .to_owned()
+                    .as_os_str()
+                    .to_owned()
+            })
             .collect();
 
         let data_source = CStoreDataSource::new(paths);
