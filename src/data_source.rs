@@ -166,11 +166,14 @@ impl ExecutionPlan for CStoreExec {
         let guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
         for i in &self.projections {
             let attr = self.db.pg_schema[*i];
-            column_list.push(&mut pg_sys::Var {
-                varattno: attr.num(),
-                vartype: attr.type_oid().value(),
-                ..Default::default()
-            });
+            column_list.push(
+                PgBox::new(pg_sys::Var {
+                    varattno: attr.num(),
+                    vartype: attr.type_oid().value(),
+                    ..Default::default()
+                })
+                .into_pg(),
+            );
             appenders.push(attr_to_appender_builder(&attr, 1024))
         }
 

@@ -107,7 +107,8 @@ mod tests {
         assert!(!provider.table_exist("doesntexist"));
         assert_eq!(
             provider.table_names(),
-            vec!["o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b"]
+            // vec!["o564173e5b42a103f7079e0401d6269e54b5930a9d2144911d3f1db41a3fa1b"]
+            vec!["table"]
         );
     }
 }
