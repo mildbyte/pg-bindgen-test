@@ -132,7 +132,7 @@ impl ExecutionPlan for CStoreExec {
     }
 
     fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
+        datafusion::physical_plan::Partitioning::UnknownPartitioning(self.db.object_paths.len())
     }
 
     fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
@@ -178,7 +178,7 @@ impl ExecutionPlan for CStoreExec {
         }
 
         let stream = CStoreExecStream {
-            object_paths: VecDeque::from(self.db.object_paths.clone()),
+            object_paths: VecDeque::from(vec![self.db.object_paths[_partition].clone()]),
             schema: self.projected_schema.to_owned(),
             projection: self.projections.clone(),
             column_list,
