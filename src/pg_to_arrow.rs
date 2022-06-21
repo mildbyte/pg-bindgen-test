@@ -2,9 +2,9 @@ use std::ffi::CStr;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
-    ArrayRef, BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder,
-    Float64Builder, Int16Builder, Int32Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+    ArrayRef, BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder, Float64Builder,
+    Int16Builder, Int32Builder, Int64Builder, StringBuilder, Time64MicrosecondBuilder,
+    TimestampMicrosecondBuilder,
 };
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use pgx::pg_sys::{self, Datum, FmgrInfo, FormData_pg_attribute, InvalidOid, Oid};

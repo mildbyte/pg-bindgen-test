@@ -1,13 +1,8 @@
 pub mod cstore_sys;
 
-
-
 use super::postgres;
 
-
-use pgx::{
-    pg_sys::{FormData_pg_attribute},
-};
+use pgx::pg_sys::FormData_pg_attribute;
 
 pub fn cstore_schema_to_attributes(schema: &str) -> Vec<FormData_pg_attribute> {
     let json: Vec<(i16, String, String, bool)> =

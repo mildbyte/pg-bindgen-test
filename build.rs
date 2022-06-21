@@ -22,7 +22,7 @@ fn main() {
     let bindings = bindgen::Builder::default()
         .allowlist_function("CStore.*")
         .header("includes.h")
-        .clang_arg(&format!("-I./include"))
+        .clang_arg(&"-I./include".to_string())
         .rustfmt_bindings(true)
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.

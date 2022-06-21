@@ -45,55 +45,56 @@ pub unsafe fn init_pg() {
     let data_dir = CString::new("/home/mildbyte/.pgx/data-12").unwrap();
     let exec_path = CString::new("/home/mildbyte/.pgx/12.11/pgx-install/bin/postgres").unwrap();
 
-        // Initialize the memory context subsystem
-        pg_sys::MemoryContextInit();
+    // Initialize the memory context subsystem
+    pg_sys::MemoryContextInit();
 
-        // Infer the correct executable paths
-        pg_sys::InitStandaloneProcess(exec_path.as_ptr());
+    // Infer the correct executable paths
+    pg_sys::InitStandaloneProcess(exec_path.as_ptr());
 
-        // Manually set the Mode enum to InitProcessing
-        pg_sys::Mode = 1;
+    // Manually set the Mode enum to InitProcessing
+    pg_sys::Mode = 1;
 
-        pg_sys::InitializeGUCOptions();
-        InitializeTimeouts();
+    pg_sys::InitializeGUCOptions();
+    InitializeTimeouts();
 
-        // Initialize the data directory and the settings. We're connecting to the database
-        // "postgres" as the user "postgres", but since we're running in the standalone backend
-        // mode, we don't need to care about authentication.
-        pg_sys::SelectConfigFiles(data_dir.as_ptr(), postgres.as_ptr());
-        pg_sys::ChangeToDataDir();
-        pg_sys::CreateDataDirLockFile(false);
-        pg_sys::LocalProcessControlFile(true);
-        pg_sys::InitializeMaxBackends();
+    // Initialize the data directory and the settings. We're connecting to the database
+    // "postgres" as the user "postgres", but since we're running in the standalone backend
+    // mode, we don't need to care about authentication.
+    pg_sys::SelectConfigFiles(data_dir.as_ptr(), postgres.as_ptr());
+    pg_sys::ChangeToDataDir();
+    pg_sys::CreateDataDirLockFile(false);
+    pg_sys::LocalProcessControlFile(true);
+    pg_sys::InitializeMaxBackends();
 
-        // Initialize all the transaction management subsystems, shared memory etc
-        pg_sys::BaseInit();
-        pg_sys::InitProcess();
-        pg_sys::InitPostgres(
-            postgres.as_ptr(),
-            pg_sys::InvalidOid,
-            postgres.as_ptr(),
-            pg_sys::InvalidOid,
-            std::ptr::null_mut(),
-            false,
-        );
+    // Initialize all the transaction management subsystems, shared memory etc
+    pg_sys::BaseInit();
+    pg_sys::InitProcess();
+    pg_sys::InitPostgres(
+        postgres.as_ptr(),
+        pg_sys::InvalidOid,
+        postgres.as_ptr(),
+        pg_sys::InvalidOid,
+        std::ptr::null_mut(),
+        false,
+    );
 
-        pg_sys::StartTransactionCommand();
+    pg_sys::StartTransactionCommand();
 
-        // Technically we should wrap PG operations in StartTransactionCommand/AbortCurrentTransaction
-        // to be friendly to the internal state. But we're not actually accepting connections here
-        // or doing anything other than scanning through internal catalog tables for operators/types.
-        // So, we're effectively running a really long transaction that never ends. This is simpler
-        // to organize than figuring out how (and at what granularity) to wrap code that calls into PG.
+    // Technically we should wrap PG operations in StartTransactionCommand/AbortCurrentTransaction
+    // to be friendly to the internal state. But we're not actually accepting connections here
+    // or doing anything other than scanning through internal catalog tables for operators/types.
+    // So, we're effectively running a really long transaction that never ends. This is simpler
+    // to organize than figuring out how (and at what granularity) to wrap code that calls into PG.
 
-        // TODO: figure out memory contexts and shared locking
-        pg_sys::AllocSetContextCreateExtended(
-            PgMemoryContexts::CurrentMemoryContext.value(),
-            "Execution context".as_pg_cstr(),
-            pg_sys::ALLOCSET_DEFAULT_MINSIZE as usize,
-            pg_sys::ALLOCSET_DEFAULT_INITSIZE as usize,
-            (pg_sys::ALLOCSET_DEFAULT_MAXSIZE * 16) as usize,
-        );
+    // TODO: figure out memory contexts and shared locking
+    let context = pg_sys::AllocSetContextCreateExtended(
+        PgMemoryContexts::CurrentMemoryContext.value(),
+        "Execution context".as_pg_cstr(),
+        pg_sys::ALLOCSET_DEFAULT_MINSIZE as usize,
+        pg_sys::ALLOCSET_DEFAULT_INITSIZE as usize,
+        (pg_sys::ALLOCSET_DEFAULT_MAXSIZE * 16) as usize,
+    );
+    pg_sys::CurrentMemoryContext = context;
 }
 
 pub fn parse_type(name: &str) -> (pgx::PgOid, i32) {
@@ -149,18 +150,13 @@ pub fn build_attribute(ordinal: i16, name: &str, type_name: &str) -> pg_sys::For
 
 pub fn create_tuple_desc(
     attributes: &[pg_sys::FormData_pg_attribute],
-) -> pgx::PgBox<pg_sys::TupleDescData, pgx::AllocatedByPostgres> {
+) -> *mut pg_sys::TupleDescData {
     let mut attrs = attributes
         .iter()
         .map(|s| s as *const _ as *mut pg_sys::FormData_pg_attribute)
         .collect::<Vec<_>>();
 
-    unsafe {
-        pgx::PgBox::from_pg(pg_sys::CreateTupleDesc(
-            attrs.len().try_into().unwrap(),
-            attrs.as_mut_ptr(),
-        ))
-    }
+    unsafe { pg_sys::CreateTupleDesc(attrs.len().try_into().unwrap(), attrs.as_mut_ptr()) }
 }
 
 #[cfg(test)]

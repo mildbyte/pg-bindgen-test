@@ -63,12 +63,7 @@ impl SchemaProvider for CStoreSchemaProvider {
             .map(|r| r.unwrap().path())
             .filter(is_valid_cstore_file)
             .map(|r| r.file_name().unwrap().to_str().unwrap().to_string())
-            .map(|f| {
-                PathBuf::from(&self.basepath)
-                    .join(f)
-                    .as_os_str()
-                    .to_owned()
-            })
+            .map(|f| PathBuf::from(&self.basepath).join(f).as_os_str().to_owned())
             .collect();
 
         let data_source = CStoreDataSource::new(paths);

@@ -91,6 +91,7 @@ struct Args {
 }
 
 #[tokio::main]
+// #[tokio::main(flavor = "current_thread")]
 pub async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();

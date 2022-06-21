@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::ffi::{CString, OsString};
 use std::fs;
 use std::pin::Pin;
+
 use std::task::{Context, Poll};
 
 use datafusion::physical_plan::RecordBatchStream;
@@ -27,8 +28,8 @@ use datafusion::{
     physical_expr::PhysicalSortExpr,
     physical_plan::{project_schema, ExecutionPlan, SendableRecordBatchStream, Statistics},
 };
+use pgx::name_data_to_str;
 use pgx::pg_sys::{self, FormData_pg_attribute};
-use pgx::{name_data_to_str, AllocatedByPostgres, PgBox, PgList};
 
 use crate::cstore::cstore_schema_to_attributes;
 use crate::cstore::cstore_sys::{CStoreBeginRead, CStoreEndRead, CStoreReadNextRow};
@@ -155,25 +156,26 @@ impl ExecutionPlan for CStoreExec {
         _partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let mut column_list = PgList::<pg_sys::Var>::new();
-        let mut appenders: Vec<Box<dyn DatumAppender>> = Vec::with_capacity(self.projections.len());
-
         // NB: from testing this with an expression selecting the same column with two aliases, self.projections
         // doesn't repeat columns, so we won't be doing extra work.
 
         // Because PostgreSQL isn't multi-threaded, we have to do this whole read
         // in a critical section. This code hits things like SysCaches etc.
-        let guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
+        let _guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
+
+        let mut column_list = std::ptr::null_mut();
+        let mut appenders: Vec<Box<dyn DatumAppender>> = Vec::with_capacity(self.projections.len());
+
         for i in &self.projections {
             let attr = self.db.pg_schema[*i];
-            column_list.push(
-                PgBox::new(pg_sys::Var {
-                    varattno: attr.num(),
-                    vartype: attr.type_oid().value(),
-                    ..Default::default()
-                })
-                .into_pg(),
-            );
+
+            unsafe {
+                let var = pg_sys::palloc0(std::mem::size_of::<pg_sys::Var>()) as *mut pg_sys::Var;
+                (*var).varattno = attr.num();
+                (*var).vartype = attr.type_oid().value();
+                column_list = pg_sys::lappend(column_list, var as *mut std::os::raw::c_void);
+            }
+
             appenders.push(attr_to_appender_builder(&attr, 1024))
         }
 
@@ -185,7 +187,7 @@ impl ExecutionPlan for CStoreExec {
             appenders,
             tuple_desc: postgres::create_tuple_desc(&self.db.pg_schema),
         };
-        drop(guard);
+        // drop(guard);
         Ok(Box::pin(stream))
     }
 
@@ -203,9 +205,9 @@ struct CStoreExecStream {
     object_paths: VecDeque<OsString>,
     schema: SchemaRef,
     projection: Vec<usize>,
-    column_list: PgList<pg_sys::Var>,
+    column_list: *mut pg_sys::List,
     appenders: Vec<Box<dyn DatumAppender>>,
-    tuple_desc: PgBox<pg_sys::TupleDescData, AllocatedByPostgres>,
+    tuple_desc: *mut pg_sys::TupleDescData,
 }
 
 impl CStoreExecStream {}
@@ -225,15 +227,17 @@ impl Iterator for CStoreExecStream {
                     let c_path = CString::new(object_path.as_bytes()).unwrap();
                     CStoreBeginRead(
                         c_path.as_ptr(),
-                        self.tuple_desc.as_ptr(),
-                        self.column_list.as_ptr(),
+                        self.tuple_desc,
+                        self.column_list,
                         std::ptr::null_mut(),
                     )
                 };
 
-                let mut column_values: Vec<pg_sys::Datum> = vec![0; self.tuple_desc.natts as usize];
-                let mut column_nulls: Vec<bool> = vec![false; self.tuple_desc.natts as usize];
                 unsafe {
+                    let mut column_values: Vec<pg_sys::Datum> =
+                        vec![0; (*self.tuple_desc).natts as usize];
+                    let mut column_nulls: Vec<bool> =
+                        vec![false; (*self.tuple_desc).natts as usize];
                     while CStoreReadNextRow(
                         read_state,
                         column_values.as_mut_ptr(),
