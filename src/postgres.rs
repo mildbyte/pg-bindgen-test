@@ -25,7 +25,7 @@ extern "C" {
     fn InitializeTimeouts();
 }
 
-pub unsafe fn init_pg() -> () {
+pub unsafe fn init_pg() {
     // Pretend to be a standalone Postgres backend (as if we were running postgres --single)
     // To do that, we're executing all the commands from PostgresMain from postgres.c
     // required to initialize various subsystems.
@@ -45,7 +45,6 @@ pub unsafe fn init_pg() -> () {
     let data_dir = CString::new("/home/mildbyte/.pgx/data-12").unwrap();
     let exec_path = CString::new("/home/mildbyte/.pgx/12.11/pgx-install/bin/postgres").unwrap();
 
-    unsafe {
         // Initialize the memory context subsystem
         pg_sys::MemoryContextInit();
 
@@ -95,7 +94,6 @@ pub unsafe fn init_pg() -> () {
             pg_sys::ALLOCSET_DEFAULT_INITSIZE as usize,
             (pg_sys::ALLOCSET_DEFAULT_MAXSIZE * 16) as usize,
         );
-    }
 }
 
 pub fn parse_type(name: &str) -> (pgx::PgOid, i32) {
@@ -150,12 +148,12 @@ pub fn build_attribute(ordinal: i16, name: &str, type_name: &str) -> pg_sys::For
 }
 
 pub fn create_tuple_desc(
-    attributes: &Vec<pg_sys::FormData_pg_attribute>,
+    attributes: &[pg_sys::FormData_pg_attribute],
 ) -> pgx::PgBox<pg_sys::TupleDescData, pgx::AllocatedByPostgres> {
     let mut attrs = attributes
         .iter()
         .map(|s| s as *const _ as *mut pg_sys::FormData_pg_attribute)
-        .collect::<Vec<*mut pg_sys::FormData_pg_attribute>>();
+        .collect::<Vec<_>>();
 
     unsafe {
         pgx::PgBox::from_pg(pg_sys::CreateTupleDesc(

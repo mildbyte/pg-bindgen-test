@@ -49,7 +49,7 @@ impl CStoreDataSource {
                 .expect("Something went wrong reading the file");
 
         let guard = postgres::PG_INTERNALS_LOCK.lock().unwrap();
-        let attributes = unsafe { cstore_schema_to_attributes(&schema_json) };
+        let attributes = cstore_schema_to_attributes(&schema_json);
         drop(guard);
 
         Self {
@@ -117,7 +117,7 @@ impl CStoreExec {
             projected_schema,
             projections: projections
                 .clone()
-                .unwrap_or((0..schema.fields().len()).collect()),
+                .unwrap_or_else(|| (0..schema.fields().len()).collect()),
         }
     }
 }

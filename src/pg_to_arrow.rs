@@ -2,7 +2,7 @@ use std::ffi::CStr;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
-    ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder,
+    ArrayRef, BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder,
     Float64Builder, Int16Builder, Int32Builder, Int64Builder, StringBuilder,
     Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
@@ -10,10 +10,8 @@ use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use pgx::pg_sys::{self, Datum, FmgrInfo, FormData_pg_attribute, InvalidOid, Oid};
 use pgx::{FromDatum, Numeric, PgBuiltInOids as O, PgOid};
 
-// type DatumAppender = dyn Fn(Datum, bool, &mut Box<dyn ArrayBuilder>) -> ();
-
 pub trait DatumAppender {
-    fn call(&mut self, datum: Datum, is_null: bool) -> ();
+    fn call(&mut self, datum: Datum, is_null: bool);
     fn finish(&mut self) -> ArrayRef;
 }
 

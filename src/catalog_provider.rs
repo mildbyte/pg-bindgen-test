@@ -21,9 +21,9 @@ impl CatalogProvider for CStoreCatalogProvider {
     }
 
     fn schema(&self, _name: &str) -> Option<Arc<dyn SchemaProvider>> {
-        return Some(Arc::new(CStoreSchemaProvider {
+        Some(Arc::new(CStoreSchemaProvider {
             basepath: self.basepath.clone(),
-        }));
+        }))
     }
 }
 
@@ -42,7 +42,7 @@ fn is_valid_cstore_file(r: &PathBuf) -> bool {
     if !r.with_extension("schema").exists() || !r.with_extension("footer").exists() {
         return false;
     }
-    return true;
+    true
 }
 
 impl SchemaProvider for CStoreSchemaProvider {
@@ -66,7 +66,6 @@ impl SchemaProvider for CStoreSchemaProvider {
             .map(|f| {
                 PathBuf::from(&self.basepath)
                     .join(f)
-                    .to_owned()
                     .as_os_str()
                     .to_owned()
             })
